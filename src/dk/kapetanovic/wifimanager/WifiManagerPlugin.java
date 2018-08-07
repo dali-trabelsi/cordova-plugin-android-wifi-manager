@@ -1,5 +1,6 @@
 package dk.kapetanovic.wifimanager;
 
+import android.os.Build;
 import android.Manifest;
 import android.content.BroadcastReceiver;
 import android.content.Context;
@@ -535,7 +536,8 @@ public class WifiManagerPlugin extends CordovaPlugin {
 
         JSONObject json = new JSONObject();
         json.put("BSSID", wifiInfo.getBSSID());
-        json.put("frequency", wifiInfo.getFrequency());
+	if (Build.VERSION.SDK_INT >= 21)
+		json.put("frequency", wifiInfo.getFrequency());
         json.put("hiddenSSID", wifiInfo.getHiddenSSID());
         json.put("ipAddress", wifiInfo.getIpAddress());
         json.put("linkSpeed", wifiInfo.getLinkSpeed());
@@ -570,12 +572,16 @@ public class WifiManagerPlugin extends CordovaPlugin {
         json.put("BSSID", scanResult.BSSID);
         json.put("SSID", scanResult.SSID);
         json.put("capabilities", scanResult.capabilities);
-        json.put("centerFreq0", scanResult.centerFreq0);
-        json.put("centerFreq1", scanResult.centerFreq1);
-        json.put("channelWidth", toStringChannelWidth(scanResult.channelWidth));
+	if (Build.VERSION.SDK_INT >= 23)
+	{
+	    json.put("centerFreq0", scanResult.centerFreq0);
+	    json.put("centerFreq1", scanResult.centerFreq1);
+	    json.put("channelWidth", toStringChannelWidth(scanResult.channelWidth));
+	}
         json.put("frequency", scanResult.frequency);
         json.put("level", scanResult.level);
-        json.put("timestamp", scanResult.timestamp);
+	if (Build.VERSION.SDK_INT >= 17)
+	    json.put("timestamp", scanResult.timestamp);
 
         return json;
     }
