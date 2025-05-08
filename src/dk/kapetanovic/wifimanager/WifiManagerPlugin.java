@@ -1,5 +1,6 @@
 package dk.kapetanovic.wifimanager;
 
+import android.net.wifi.WifiNetworkSuggestion;
 import android.os.Build;
 import android.Manifest;
 import android.content.BroadcastReceiver;
@@ -17,6 +18,10 @@ import android.net.wifi.WifiManager;
 import android.net.ConnectivityManager;
 import android.provider.Settings;
 import android.text.TextUtils;
+import android.net.Network;
+import android.net.NetworkCapabilities;
+import android.net.NetworkRequest;
+import android.net.wifi.WifiNetworkSpecifier;
 
 import org.apache.cordova.CallbackContext;
 import org.apache.cordova.CordovaInterface;
@@ -202,12 +207,44 @@ public class WifiManagerPlugin extends CordovaPlugin {
         return true;
     }
 
-    private void addNetwork(JSONArray args, CallbackContext callbackContext) throws JSONException {
-        JSONObject json = args.getJSONObject(0);
-        WifiConfiguration wifiConfig = fromJSONWifiConfiguration(json);
-        int networkId = wifiManager.addNetwork(wifiConfig);
-        callbackContext.sendPluginResult(OK(networkId));
+  private void addNetwork(JSONArray args, CallbackContext callbackContext) throws JSONException {
+    JSONObject json = args.getJSONObject(0);
+    WifiConfiguration wifiConfig = fromJSONWifiConfiguration(json);
+    // With (for Android 10+):
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+      // Use WifiNetworkSuggestion for Android 10+
+      WifiNetworkSuggestion suggestion = new WifiNetworkSuggestion.Builder()
+        .setSsid(wifiConfig.SSID.replace("\"", ""))
+        .setWpa2Passphrase(wifiConfig.preSharedKey.replace("\"", ""))
+        .setIsAppInteractionRequired(true) // Requires user interaction
+        .build();
+
+      List<WifiNetworkSuggestion> suggestions = new ArrayList<>();
+      suggestions.add(suggestion);
+
+      wifiManager.addNetworkSuggestions(suggestions);
+
+      // Check if the suggestion was successfully added
+      int status = 0;
+      if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+        status = wifiManager.getNetworkSuggestions().size();
+      }
+      if (status > 0) {
+        callbackContext.sendPluginResult(OK("Network suggestion added"));
+      } else {
+        callbackContext.sendPluginResult(ERROR("Failed to add network suggestion"));
+      }
+    } else {
+      // Legacy code for older Android versions
+      int networkId = wifiManager.addNetwork(wifiConfig);
+      if (networkId == -1) {
+        callbackContext.sendPluginResult(ERROR("Failed to add network"));
+        return;
+      }
+      boolean enabled = wifiManager.enableNetwork(networkId, true);
+      callbackContext.sendPluginResult(OK(enabled));
     }
+  }
 
     private void disableNetwork(JSONArray args, CallbackContext callbackContext) throws JSONException {
         int networkId = args.getInt(0);
