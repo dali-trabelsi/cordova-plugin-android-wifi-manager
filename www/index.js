@@ -65,16 +65,71 @@ var WifiManager = function () {
 
   var self = this;
 
-  exec('onChange', null, function (err, result) {
+  // The native side may call the onChange success callback with either:
+  //  - a single object { event: 'NAME', data: ... }
+  //  - two args: eventName, data
+  //  - other shapes (strings, JSON-stringified payloads)
+  // Accept any of those forms and normalize.
+  exec('onChange', null, function () {
+    var args = slice.call(arguments);
+    var err = args[0];
     if (err) {
       if (self.onerror) self.onerror(err);
       return;
     }
 
-    var event = result.event.replace(/_/g, '').toLowerCase();
+    // success args follow
+    var successArgs = args.slice(1);
+    var eventName = null;
+    var data = null;
+
+    if (successArgs.length === 1) {
+      var payload = successArgs[0];
+      // payload may be JSON string
+      if (typeof payload === 'string') {
+        try {
+          payload = JSON.parse(payload);
+        } catch (e) {
+          // leave as string
+        }
+      }
+      if (payload && typeof payload === 'object' && payload.hasOwnProperty('event')) {
+        eventName = payload.event;
+        data = payload.hasOwnProperty('data') ? payload.data : null;
+      } else {
+        // If payload is a plain string or object without event, try best-effort
+        eventName = (payload && payload.event) || null;
+        data = payload;
+      }
+    } else if (successArgs.length >= 2) {
+      eventName = successArgs[0];
+      data = successArgs[1];
+      if (typeof data === 'string') {
+        try {
+          data = JSON.parse(data);
+        } catch (e) {}
+      }
+    }
+
+    if (!eventName && data && data.event) eventName = data.event;
+    // Debug: log incoming normalized events for troubleshooting Android 10/11 differences
+    try {
+      if (typeof console !== 'undefined' && console.debug) console.debug('WifiManager onChange:', eventName, data);
+    } catch (e) {}
+    if (!eventName) {
+      // fallback: unknown event
+      return;
+    }
+
+    var event = ('' + eventName).replace(/_/g, '').toLowerCase();
     var cb = self['on' + event];
-    if (cb) cb.call(self, result.data);
-    if (self.onevent) self.onevent(event, result.data);
+    try {
+      if (cb) cb.call(self, data);
+      if (self.onevent) self.onevent(event, data);
+    } catch (e) {
+      // swallow errors to avoid breaking native callbacks
+      console.error('WifiManager wrapper onChange handler error', e);
+    }
   });
 };
 
@@ -86,11 +141,23 @@ METHODS.forEach(function (method) {
     if (typeof cb === 'function') args.pop();
     else cb = noop;
 
-    exec(method, args, function (err, result) {
+    exec(method, args, function () {
+      var a = slice.call(arguments);
+      var err = a[0];
       if (err) return cb(err);
+      var succ = a.slice(1);
+      var result = succ.length === 1 ? succ[0] : succ;
+
+      // If result is a JSON string, try to parse it
+      if (typeof result === 'string') {
+        try {
+          result = JSON.parse(result);
+        } catch (e) {
+          // keep original string
+        }
+      }
+
       try {
-        // Some native implementations return an object { data: ... }
-        // while others return the value/array directly. Accept both.
         if (result && typeof result === 'object' && result.hasOwnProperty('data')) {
           cb(null, result.data);
         } else {
