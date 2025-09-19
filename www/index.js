@@ -1,10 +1,12 @@
 var METHODS = [
   'addNetwork',
+  'checkPermissions',
   'disableNetwork',
   'disconnect',
   'enableNetwork',
   'getConfiguredNetworks',
   'getConnectionInfo',
+  'getCurrentNetwork',
   'getDhcpInfo',
   'getScanResults',
   'getWifiApConfiguration',
@@ -12,6 +14,7 @@ var METHODS = [
   'getWifiState',
   'isScanAlwaysAvailable',
   'isWifiApEnabled',
+  'isWifiConnected',
   'isWifiEnabled',
   'reassociate',
   'reconnect',
@@ -22,72 +25,82 @@ var METHODS = [
   'setWifiEnabled',
   'startScan',
   'updateNetwork'
-]
+];
 
-var noop = function () {}
-var slice = Array.prototype.slice
+var noop = function () {};
+var slice = Array.prototype.slice;
 
 var toError = function (obj) {
-  if (!obj) return new Error('ERROR')
-  if (obj instanceof Error) return obj
-  if (obj.hasOwnProperty('data')) return new Error(obj.data || 'ERROR')
-  return new Error(obj)
-}
+  if (!obj) return new Error('ERROR');
+  if (obj instanceof Error) return obj;
+  if (obj.hasOwnProperty('data')) return new Error(obj.data || 'ERROR');
+  return new Error(obj);
+};
 
 var exec = function (method, args, cb) {
   var onsucces = function () {
-    var args = slice.call(arguments)
-    args.unshift(null)
-    cb.apply(null, args)
-  }
+    var args = slice.call(arguments);
+    args.unshift(null);
+    cb.apply(null, args);
+  };
 
   var onerror = function (err) {
-    cb(toError(err))
-  }
+    cb(toError(err));
+  };
 
-  window.cordova.exec(onsucces, onerror, 'WifiManagerPlugin', method, args || [])
-}
+  window.cordova.exec(onsucces, onerror, 'WifiManagerPlugin', method, args || []);
+};
 
 var WifiManager = function () {
-  this.onnetworkidschanged = null
-  this.onnetworkstatechanged = null
-  this.onrssichanged = null
-  this.onscanresultsavailable = null
-  this.onsupplicantconnectionchange = null
-  this.onsupplicantstatechanged = null
-  this.onwifiapstatechanged = null
-  this.onwifistatechanged = null
-  this.onevent = null
-  this.onerror = null
+  this.onnetworkidschanged = null;
+  this.onnetworkstatechanged = null;
+  this.onrssichanged = null;
+  this.onscanresultsavailable = null;
+  this.onsupplicantconnectionchange = null;
+  this.onsupplicantstatechanged = null;
+  this.onwifiapstatechanged = null;
+  this.onwifistatechanged = null;
+  this.onevent = null;
+  this.onerror = null;
 
-  var self = this
+  var self = this;
 
   exec('onChange', null, function (err, result) {
     if (err) {
-      if (self.onerror) self.onerror(err)
-      return
+      if (self.onerror) self.onerror(err);
+      return;
     }
 
-    var event = result.event.replace(/_/g, '').toLowerCase()
-    var cb = self['on' + event]
-    if (cb) cb.call(self, result.data)
-    if (self.onevent) self.onevent(event, result.data)
-  })
-}
+    var event = result.event.replace(/_/g, '').toLowerCase();
+    var cb = self['on' + event];
+    if (cb) cb.call(self, result.data);
+    if (self.onevent) self.onevent(event, result.data);
+  });
+};
 
 METHODS.forEach(function (method) {
   WifiManager.prototype[method] = function () {
-    var args = slice.call(arguments)
-    var cb = args[args.length - 1]
+    var args = slice.call(arguments);
+    var cb = args[args.length - 1];
 
-    if (typeof cb === 'function') args.pop()
-    else cb = noop
+    if (typeof cb === 'function') args.pop();
+    else cb = noop;
 
     exec(method, args, function (err, result) {
-      if (err) return cb(err)
-      cb(null, result.data)
-    })
-  }
-})
+      if (err) return cb(err);
+      try {
+        // Some native implementations return an object { data: ... }
+        // while others return the value/array directly. Accept both.
+        if (result && typeof result === 'object' && result.hasOwnProperty('data')) {
+          cb(null, result.data);
+        } else {
+          cb(null, result);
+        }
+      } catch (e) {
+        cb(null, result);
+      }
+    });
+  };
+});
 
-module.exports = new WifiManager()
+module.exports = new WifiManager();
