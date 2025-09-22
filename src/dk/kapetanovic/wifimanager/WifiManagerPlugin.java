@@ -80,6 +80,7 @@ public class WifiManagerPlugin extends CordovaPlugin {
     private static final String ACTION_REASSOCIATE = "reassociate";
     private static final String ACTION_RECONNECT = "reconnect";
     private static final String ACTION_REMOVE_NETWORK = "removeNetwork";
+    private static final String ACTION_REMOVE_ALL_SUGGESTIONS = "removeAllSuggestions";
     private static final String ACTION_SAVE_CONFIGURATION = "saveConfiguration";
     private static final String ACTION_SET_WIFI_AP_CONFIGURATION = "setWifiApConfiguration";
     private static final String ACTION_SET_WIFI_AP_ENABLED = "setWifiApEnabled";
@@ -204,6 +205,7 @@ public class WifiManagerPlugin extends CordovaPlugin {
         else if(action.equals(ACTION_REASSOCIATE)) reassociate(callbackContext);
         else if(action.equals(ACTION_RECONNECT)) reconnect(callbackContext);
         else if(action.equals(ACTION_REMOVE_NETWORK)) removeNetwork(args, callbackContext);
+        else if(action.equals(ACTION_REMOVE_ALL_SUGGESTIONS)) removeAllSuggestions(callbackContext);
         else if(action.equals(ACTION_SAVE_CONFIGURATION)) saveConfiguration(callbackContext);
         else if(action.equals(ACTION_SET_WIFI_AP_CONFIGURATION)) return setWifiApConfiguration(args, callbackContext);
         else if(action.equals(ACTION_SET_WIFI_AP_ENABLED)) return setWifiApEnabled(args, callbackContext);
@@ -239,64 +241,163 @@ public class WifiManagerPlugin extends CordovaPlugin {
     
     Log.d(TAG, "Cleaned SSID: " + ssid + ", Password: " + (password.isEmpty() ? "empty" : "provided"));
 
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-          Log.d(TAG, "Using WifiNetworkSuggestion for Android 10+");
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+          // Android 11+ - Use legacy API directly as suggestion API doesn't actually connect
+          Log.d(TAG, "[ANDROID11_DEBUG] Android 11+ detected, using legacy WifiConfiguration API for actual connection");
           
           try {
-            // Use WifiNetworkSuggestion for Android 10+
+            WifiConfiguration wifiConfig = new WifiConfiguration();
+            wifiConfig.SSID = "\"" + ssid + "\"";
+            
+            if (!password.isEmpty()) {
+              Log.d(TAG, "[ANDROID11_DEBUG] Adding WPA2 passphrase for Android 11+");
+              wifiConfig.preSharedKey = "\"" + password + "\"";
+              wifiConfig.allowedKeyManagement.set(WifiConfiguration.KeyMgmt.WPA_PSK);
+              wifiConfig.allowedProtocols.set(WifiConfiguration.Protocol.RSN);
+              wifiConfig.allowedProtocols.set(WifiConfiguration.Protocol.WPA);
+              wifiConfig.allowedKeyManagement.set(WifiConfiguration.KeyMgmt.WPA_PSK);
+              wifiConfig.allowedPairwiseCiphers.set(WifiConfiguration.PairwiseCipher.CCMP);
+              wifiConfig.allowedPairwiseCiphers.set(WifiConfiguration.PairwiseCipher.TKIP);
+              wifiConfig.allowedGroupCiphers.set(WifiConfiguration.GroupCipher.WEP40);
+              wifiConfig.allowedGroupCiphers.set(WifiConfiguration.GroupCipher.WEP104);
+              wifiConfig.allowedGroupCiphers.set(WifiConfiguration.GroupCipher.CCMP);
+              wifiConfig.allowedGroupCiphers.set(WifiConfiguration.GroupCipher.TKIP);
+            } else {
+              Log.d(TAG, "[ANDROID11_DEBUG] No password provided, creating open network for Android 11+");
+              wifiConfig.allowedKeyManagement.set(WifiConfiguration.KeyMgmt.NONE);
+            }
+            
+            Log.d(TAG, "Adding network configuration for SSID: " + ssid);
+            
+            int networkId = wifiManager.addNetwork(wifiConfig);
+            Log.d(TAG, "addNetwork result: " + networkId);
+            
+            if (networkId != -1) {
+              Log.d(TAG, "Network added successfully, enabling...");
+              boolean enabled = wifiManager.enableNetwork(networkId, true);
+              boolean saved = wifiManager.saveConfiguration();
+              wifiManager.startScan();
+              Log.d(TAG, "Network enabled and saved, scan started");
+              callbackContext.sendPluginResult(OK(networkId));
+            } else {
+              Log.e(TAG, "Failed to add network configuration - trying fallback approach");
+              
+              // Try a simpler configuration as fallback
+              try {
+                WifiConfiguration simpleConfig = new WifiConfiguration();
+                simpleConfig.SSID = "\"" + ssid + "\"";
+                
+                if (!password.isEmpty()) {
+                  simpleConfig.preSharedKey = "\"" + password + "\"";
+                  simpleConfig.allowedKeyManagement.set(WifiConfiguration.KeyMgmt.WPA_PSK);
+                } else {
+                  simpleConfig.allowedKeyManagement.set(WifiConfiguration.KeyMgmt.NONE);
+                }
+                
+                int simpleNetworkId = wifiManager.addNetwork(simpleConfig);
+                Log.d(TAG, "Simple config addNetwork result: " + simpleNetworkId);
+                
+                if (simpleNetworkId != -1) {
+                  Log.d(TAG, "Simple configuration successful, enabling...");
+                  wifiManager.enableNetwork(simpleNetworkId, true);
+                  wifiManager.saveConfiguration();
+                  wifiManager.startScan();
+                  callbackContext.sendPluginResult(OK(simpleNetworkId));
+                } else {
+                  Log.e(TAG, "Both detailed and simple configurations failed");
+                  // Try suggestion API as last resort
+                  Log.d(TAG, "Falling back to WifiNetworkSuggestion API...");
+                  
+                  WifiNetworkSuggestion.Builder builder = new WifiNetworkSuggestion.Builder()
+                    .setSsid(ssid)
+                    .setIsAppInteractionRequired(true);
+                  
+                  if (!password.isEmpty()) {
+                    builder.setWpa2Passphrase(password);
+                  }
+                  
+                  WifiNetworkSuggestion suggestion = builder.build();
+                  List<WifiNetworkSuggestion> suggestions = new ArrayList<>();
+                  suggestions.add(suggestion);
+                  
+                  int suggestionResult = wifiManager.addNetworkSuggestions(suggestions);
+                  Log.d(TAG, "Suggestion API result: " + suggestionResult);
+                  
+                  if (suggestionResult == WifiManager.STATUS_NETWORK_SUGGESTIONS_SUCCESS) {
+                    wifiManager.startScan();
+                    JSONObject response = new JSONObject();
+                    response.put("status", "SUCCESS");
+                    response.put("message", "Network suggestion added as fallback");
+                    response.put("androidVersion", "11+");
+                    response.put("ssid", ssid);
+                    response.put("requiresMonitoring", true);
+                    callbackContext.sendPluginResult(OK(response));
+                  } else {
+                    callbackContext.sendPluginResult(ERROR("All connection methods failed for Android 11+"));
+                  }
+                }
+              } catch (Exception fallbackException) {
+                Log.e(TAG, "Fallback failed: " + fallbackException.getMessage());
+                callbackContext.sendPluginResult(ERROR("Failed to add network configuration: " + fallbackException.getMessage()));
+              }
+            }
+          } catch (Exception e) {
+            String errorMsg = "Exception in Android 11+ network configuration: " + e.getMessage();
+            Log.e(TAG, "[ANDROID11_DEBUG] " + errorMsg, e);
+            callbackContext.sendPluginResult(ERROR(errorMsg));
+          }
+        } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+          // Android 10 - Use WifiNetworkSuggestion
+          Log.d(TAG, "[ANDROID11_DEBUG] Android 10 detected, using WifiNetworkSuggestion API");
+          
+          try {
             WifiNetworkSuggestion.Builder builder = new WifiNetworkSuggestion.Builder()
               .setSsid(ssid)
-              .setIsAppInteractionRequired(false); // Allow automatic connection
+              .setIsAppInteractionRequired(false);
 
             if (!password.isEmpty()) {
-              Log.d(TAG, "Adding WPA2 passphrase");
+              Log.d(TAG, "[ANDROID11_DEBUG] Adding WPA2 passphrase for Android 10");
               builder.setWpa2Passphrase(password);
             } else {
-              Log.d(TAG, "No password provided, creating open network suggestion");
+              Log.d(TAG, "[ANDROID11_DEBUG] No password provided, creating open network suggestion for Android 10");
             }
 
             WifiNetworkSuggestion suggestion = builder.build();
             List<WifiNetworkSuggestion> suggestions = new ArrayList<>();
             suggestions.add(suggestion);
 
-            Log.d(TAG, "Adding network suggestion for SSID: " + ssid);
-            int result = wifiManager.addNetworkSuggestions(suggestions);
+            Log.d(TAG, "[ANDROID11_DEBUG] Adding network suggestion for SSID: " + ssid);
+            String securityType = password.isEmpty() ? "OPEN" : "WPA2";
+            Log.d(TAG, "[ANDROID11_DEBUG] Security type: " + securityType);
+            Log.d(TAG, "[ANDROID11_DEBUG] Password length: " + (password != null ? password.length() : 0));
             
-            Log.d(TAG, "addNetworkSuggestions result: " + result);
+            int result = wifiManager.addNetworkSuggestions(suggestions);
+            Log.d(TAG, "[ANDROID11_DEBUG] addNetworkSuggestions result: " + result);
             
             if (result == WifiManager.STATUS_NETWORK_SUGGESTIONS_SUCCESS) {
-              Log.d(TAG, "Network suggestion added successfully");
-              // For Android 10+, we need to trigger a scan to connect
+              Log.d(TAG, "[ANDROID11_DEBUG] Network suggestion added successfully for Android 10");
               wifiManager.startScan();
               
-              // Create a JSON response with status and network info for better handling
               JSONObject response = new JSONObject();
               try {
                 response.put("status", "SUCCESS");
                 response.put("message", "Network suggestion added successfully");
-                response.put("androidVersion", "10+");
+                response.put("androidVersion", "10");
                 response.put("ssid", ssid);
+                response.put("requiresMonitoring", true);
                 callbackContext.sendPluginResult(OK(response));
               } catch (JSONException e) {
                 Log.e(TAG, "Error creating response JSON", e);
                 callbackContext.sendPluginResult(OK("Network suggestion added successfully"));
               }
-            } else if (result == WifiManager.STATUS_NETWORK_SUGGESTIONS_ERROR_APP_DISALLOWED) {
-              String errorMsg = "App not allowed to add network suggestions. Check permissions.";
-              Log.e(TAG, errorMsg);
-              callbackContext.sendPluginResult(ERROR(errorMsg));
-            } else if (result == WifiManager.STATUS_NETWORK_SUGGESTIONS_ERROR_INTERNAL) {
-              String errorMsg = "Internal error adding network suggestions.";
-              Log.e(TAG, errorMsg);
-              callbackContext.sendPluginResult(ERROR(errorMsg));
             } else {
-              String errorMsg = "Failed to add network suggestion. Status: " + result;
-              Log.e(TAG, errorMsg);
+              String errorMsg = "Failed to add network suggestion for Android 10. Status: " + result;
+              Log.e(TAG, "[ANDROID11_DEBUG] " + errorMsg);
               callbackContext.sendPluginResult(ERROR(errorMsg));
             }
           } catch (Exception e) {
-            String errorMsg = "Exception in addNetworkSuggestions: " + e.getMessage();
-            Log.e(TAG, errorMsg, e);
+            String errorMsg = "Exception in Android 10 network suggestion: " + e.getMessage();
+            Log.e(TAG, "[ANDROID11_DEBUG] " + errorMsg, e);
             callbackContext.sendPluginResult(ERROR(errorMsg));
           }
     } else {
@@ -347,8 +448,41 @@ public class WifiManagerPlugin extends CordovaPlugin {
     }
 
     private void disconnect(CallbackContext callbackContext) throws JSONException {
-        boolean result = wifiManager.disconnect();
-        callbackContext.sendPluginResult(OK(result));
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            // Android 11+ - handle WifiNetworkSuggestion disconnection
+            Log.d(TAG, "Android 11+ disconnect - removing all network suggestions");
+            try {
+                // Get all current network suggestions and remove them
+                List<WifiNetworkSuggestion> currentSuggestions = wifiManager.getNetworkSuggestions();
+                if (currentSuggestions != null && !currentSuggestions.isEmpty()) {
+                    Log.d(TAG, "Removing " + currentSuggestions.size() + " network suggestions");
+                    int result = wifiManager.removeNetworkSuggestions(currentSuggestions);
+                    Log.d(TAG, "removeNetworkSuggestions result: " + result);
+                    
+                    // Also try traditional disconnect
+                    boolean traditionalResult = wifiManager.disconnect();
+                    Log.d(TAG, "Traditional disconnect result: " + traditionalResult);
+                    
+                    // Return success if either method worked
+                    boolean success = (result == WifiManager.STATUS_NETWORK_SUGGESTIONS_SUCCESS) || traditionalResult;
+                    callbackContext.sendPluginResult(OK(success));
+                } else {
+                    // No suggestions to remove, try traditional disconnect
+                    boolean result = wifiManager.disconnect();
+                    Log.d(TAG, "No suggestions found, traditional disconnect result: " + result);
+                    callbackContext.sendPluginResult(OK(result));
+                }
+            } catch (Exception e) {
+                Log.e(TAG, "Error in Android 11+ disconnect: " + e.getMessage());
+                // Fallback to traditional disconnect
+                boolean result = wifiManager.disconnect();
+                callbackContext.sendPluginResult(OK(result));
+            }
+        } else {
+            // Android 10 and below - use traditional method
+            boolean result = wifiManager.disconnect();
+            callbackContext.sendPluginResult(OK(result));
+        }
     }
 
     private void enableNetwork(JSONArray args, CallbackContext callbackContext) throws JSONException {
@@ -359,16 +493,67 @@ public class WifiManagerPlugin extends CordovaPlugin {
     }
 
     private void getConfiguredNetworks(CallbackContext callbackContext) throws JSONException {
-        List<WifiConfiguration> networks = wifiManager.getConfiguredNetworks();
-        JSONArray json = new JSONArray();
-
-        if(networks != null) {
-            for(WifiConfiguration wifiConfig : networks) {
-                json.put(toJSON(wifiConfig));
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            // Android 11+ - combine traditional networks and suggestions
+            Log.d(TAG, "Android 11+ getConfiguredNetworks - combining traditional and suggestion networks");
+            try {
+                List<WifiConfiguration> traditionalNetworks = wifiManager.getConfiguredNetworks();
+                List<WifiNetworkSuggestion> suggestions = wifiManager.getNetworkSuggestions();
+                
+                JSONArray json = new JSONArray();
+                
+                // Add traditional networks
+                if(traditionalNetworks != null) {
+                    for(WifiConfiguration wifiConfig : traditionalNetworks) {
+                        JSONObject networkObj = toJSON(wifiConfig);
+                        networkObj.put("type", "traditional");
+                        json.put(networkObj);
+                    }
+                }
+                
+                // Add suggestion networks
+                if(suggestions != null) {
+                    for(WifiNetworkSuggestion suggestion : suggestions) {
+                        JSONObject networkObj = new JSONObject();
+                        networkObj.put("networkId", -1); // Suggestions don't have networkId
+                        networkObj.put("SSID", suggestion.getSsid());
+                        networkObj.put("BSSID", "");
+                        networkObj.put("preSharedKey", "");
+                        networkObj.put("allowedKeyManagement", "");
+                        networkObj.put("type", "suggestion");
+                        networkObj.put("isAppInteractionRequired", suggestion.isAppInteractionRequired());
+                        json.put(networkObj);
+                    }
+                }
+                
+                Log.d(TAG, "Combined networks: " + json.length() + " total (" + 
+                      (traditionalNetworks != null ? traditionalNetworks.size() : 0) + " traditional, " + 
+                      (suggestions != null ? suggestions.size() : 0) + " suggestions)");
+                
+                callbackContext.sendPluginResult(OK(json));
+            } catch (Exception e) {
+                Log.e(TAG, "Error in Android 11+ getConfiguredNetworks: " + e.getMessage());
+                // Fallback to traditional method
+                List<WifiConfiguration> networks = wifiManager.getConfiguredNetworks();
+                JSONArray json = new JSONArray();
+                if(networks != null) {
+                    for(WifiConfiguration wifiConfig : networks) {
+                        json.put(toJSON(wifiConfig));
+                    }
+                }
+                callbackContext.sendPluginResult(OK(json));
             }
+        } else {
+            // Android 10 and below - use traditional method
+            List<WifiConfiguration> networks = wifiManager.getConfiguredNetworks();
+            JSONArray json = new JSONArray();
+            if(networks != null) {
+                for(WifiConfiguration wifiConfig : networks) {
+                    json.put(toJSON(wifiConfig));
+                }
+            }
+            callbackContext.sendPluginResult(OK(json));
         }
-
-        callbackContext.sendPluginResult(OK(json));
     }
 
     private void getConnectionInfo(CallbackContext callbackContext) throws JSONException {
@@ -561,6 +746,33 @@ public class WifiManagerPlugin extends CordovaPlugin {
         int networkId = args.getInt(0);
         boolean result = wifiManager.removeNetwork(networkId);
         callbackContext.sendPluginResult(OK(result));
+    }
+
+    private void removeAllSuggestions(CallbackContext callbackContext) throws JSONException {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            // Android 11+ - remove all network suggestions
+            Log.d(TAG, "Android 11+ removeAllSuggestions - removing all network suggestions");
+            try {
+                List<WifiNetworkSuggestion> currentSuggestions = wifiManager.getNetworkSuggestions();
+                if (currentSuggestions != null && !currentSuggestions.isEmpty()) {
+                    Log.d(TAG, "Removing " + currentSuggestions.size() + " network suggestions");
+                    int result = wifiManager.removeNetworkSuggestions(currentSuggestions);
+                    Log.d(TAG, "removeNetworkSuggestions result: " + result);
+                    boolean success = (result == WifiManager.STATUS_NETWORK_SUGGESTIONS_SUCCESS);
+                    callbackContext.sendPluginResult(OK(success));
+                } else {
+                    Log.d(TAG, "No network suggestions to remove");
+                    callbackContext.sendPluginResult(OK(true));
+                }
+            } catch (Exception e) {
+                Log.e(TAG, "Error in Android 11+ removeAllSuggestions: " + e.getMessage());
+                callbackContext.sendPluginResult(ERROR("Failed to remove suggestions: " + e.getMessage()));
+            }
+        } else {
+            // Android 10 and below - not applicable
+            Log.d(TAG, "removeAllSuggestions not applicable for Android " + Build.VERSION.SDK_INT);
+            callbackContext.sendPluginResult(OK(true));
+        }
     }
 
     private void saveConfiguration(CallbackContext callbackContext) throws JSONException {

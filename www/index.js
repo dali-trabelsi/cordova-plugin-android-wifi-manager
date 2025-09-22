@@ -19,6 +19,7 @@ var METHODS = [
   'reassociate',
   'reconnect',
   'removeNetwork',
+  'removeAllSuggestions',
   'saveConfiguration',
   'setWifiApConfiguration',
   'setWifiApEnabled',
@@ -126,12 +127,21 @@ var WifiManager = function () {
     // connection failures through other means
     if (eventName === 'NETWORK_STATE_CHANGED' && data && data.networkInfo) {
       const networkInfo = data.networkInfo;
-      if (networkInfo.detailedState === 'FAILED' || networkInfo.detailedState === 'DISCONNECTED') {
+      console.log('[ANDROID11_DEBUG] WifiManager: Network state changed -', networkInfo.detailedState, networkInfo.state);
+      console.log('[ANDROID11_DEBUG] WifiManager: Full networkInfo:', JSON.stringify(networkInfo));
+      
+      if (networkInfo.detailedState === 'FAILED' || 
+          (networkInfo.detailedState === 'DISCONNECTED' && networkInfo.state === 'DISCONNECTED')) {
         // This might be an authentication failure
+        console.log('[ANDROID11_DEBUG] WifiManager: Detected potential authentication failure');
         try {
-          if (self.onevent) self.onevent('AUTHENTICATION_FAILED', { reason: 'Network state changed to failed/disconnected' });
+          if (self.onevent) self.onevent('AUTHENTICATION_FAILED', { 
+            reason: 'Network state changed to failed/disconnected',
+            detailedState: networkInfo.detailedState,
+            state: networkInfo.state
+          });
         } catch (e) {
-          console.error('WifiManager wrapper error handling AUTHENTICATION_FAILED', e);
+          console.error('[ANDROID11_DEBUG] WifiManager wrapper error handling AUTHENTICATION_FAILED', e);
         }
       }
     }
