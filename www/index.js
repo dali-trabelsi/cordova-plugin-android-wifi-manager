@@ -121,6 +121,21 @@ var WifiManager = function () {
       return;
     }
 
+    // Special handling for Android 10+ authentication failures
+    // The system might not emit traditional supplicant events, so we need to detect
+    // connection failures through other means
+    if (eventName === 'NETWORK_STATE_CHANGED' && data && data.networkInfo) {
+      const networkInfo = data.networkInfo;
+      if (networkInfo.detailedState === 'FAILED' || networkInfo.detailedState === 'DISCONNECTED') {
+        // This might be an authentication failure
+        try {
+          if (self.onevent) self.onevent('AUTHENTICATION_FAILED', { reason: 'Network state changed to failed/disconnected' });
+        } catch (e) {
+          console.error('WifiManager wrapper error handling AUTHENTICATION_FAILED', e);
+        }
+      }
+    }
+
     var event = ('' + eventName).replace(/_/g, '').toLowerCase();
     var cb = self['on' + event];
     try {

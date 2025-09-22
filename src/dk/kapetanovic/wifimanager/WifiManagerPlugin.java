@@ -268,7 +268,19 @@ public class WifiManagerPlugin extends CordovaPlugin {
               Log.d(TAG, "Network suggestion added successfully");
               // For Android 10+, we need to trigger a scan to connect
               wifiManager.startScan();
-              callbackContext.sendPluginResult(OK("Network suggestion added successfully"));
+              
+              // Create a JSON response with status and network info for better handling
+              JSONObject response = new JSONObject();
+              try {
+                response.put("status", "SUCCESS");
+                response.put("message", "Network suggestion added successfully");
+                response.put("androidVersion", "10+");
+                response.put("ssid", ssid);
+                callbackContext.sendPluginResult(OK(response));
+              } catch (JSONException e) {
+                Log.e(TAG, "Error creating response JSON", e);
+                callbackContext.sendPluginResult(OK("Network suggestion added successfully"));
+              }
             } else if (result == WifiManager.STATUS_NETWORK_SUGGESTIONS_ERROR_APP_DISALLOWED) {
               String errorMsg = "App not allowed to add network suggestions. Check permissions.";
               Log.e(TAG, errorMsg);
