@@ -206,6 +206,7 @@ public class WifiManagerPlugin extends CordovaPlugin {
         else if(action.equals(ACTION_RECONNECT)) reconnect(callbackContext);
         else if(action.equals(ACTION_REMOVE_NETWORK)) removeNetwork(args, callbackContext);
         else if(action.equals(ACTION_REMOVE_ALL_SUGGESTIONS)) removeAllSuggestions(callbackContext);
+        else if(action.equals("forgetAllNetworks")) forgetAllNetworks(callbackContext);
         else if(action.equals(ACTION_SAVE_CONFIGURATION)) saveConfiguration(callbackContext);
         else if(action.equals(ACTION_SET_WIFI_AP_CONFIGURATION)) return setWifiApConfiguration(args, callbackContext);
         else if(action.equals(ACTION_SET_WIFI_AP_ENABLED)) return setWifiApEnabled(args, callbackContext);
@@ -449,34 +450,60 @@ public class WifiManagerPlugin extends CordovaPlugin {
 
     private void disconnect(CallbackContext callbackContext) throws JSONException {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-            // Android 11+ - handle WifiNetworkSuggestion disconnection
-            Log.d(TAG, "Android 11+ disconnect - removing all network suggestions");
+            // Android 11+ - comprehensive disconnection
+            Log.d(TAG, "Android 11+ comprehensive disconnect");
             try {
-                // Get all current network suggestions and remove them
+                boolean success = false;
+                int operationsPerformed = 0;
+                
+                // Step 1: Disconnect from current network
+                boolean disconnectResult = wifiManager.disconnect();
+                Log.d(TAG, "Traditional disconnect result: " + disconnectResult);
+                if (disconnectResult) operationsPerformed++;
+                
+                // Step 2: Remove all network suggestions
                 List<WifiNetworkSuggestion> currentSuggestions = wifiManager.getNetworkSuggestions();
                 if (currentSuggestions != null && !currentSuggestions.isEmpty()) {
                     Log.d(TAG, "Removing " + currentSuggestions.size() + " network suggestions");
-                    int result = wifiManager.removeNetworkSuggestions(currentSuggestions);
-                    Log.d(TAG, "removeNetworkSuggestions result: " + result);
-                    
-                    // Also try traditional disconnect
-                    boolean traditionalResult = wifiManager.disconnect();
-                    Log.d(TAG, "Traditional disconnect result: " + traditionalResult);
-                    
-                    // Return success if either method worked
-                    boolean success = (result == WifiManager.STATUS_NETWORK_SUGGESTIONS_SUCCESS) || traditionalResult;
-                    callbackContext.sendPluginResult(OK(success));
-                } else {
-                    // No suggestions to remove, try traditional disconnect
-                    boolean result = wifiManager.disconnect();
-                    Log.d(TAG, "No suggestions found, traditional disconnect result: " + result);
-                    callbackContext.sendPluginResult(OK(result));
+                    int suggestionResult = wifiManager.removeNetworkSuggestions(currentSuggestions);
+                    Log.d(TAG, "removeNetworkSuggestions result: " + suggestionResult);
+                    if (suggestionResult == WifiManager.STATUS_NETWORK_SUGGESTIONS_SUCCESS) {
+                        operationsPerformed++;
+                    }
                 }
+                
+                // Step 3: Remove traditional networks (but don't remove all, just disconnect)
+                List<WifiConfiguration> configuredNetworks = wifiManager.getConfiguredNetworks();
+                if (configuredNetworks != null && !configuredNetworks.isEmpty()) {
+                    Log.d(TAG, "Found " + configuredNetworks.size() + " traditional networks, disabling them");
+                    for (WifiConfiguration config : configuredNetworks) {
+                        boolean disabled = wifiManager.disableNetwork(config.networkId);
+                        Log.d(TAG, "Disabled network " + config.networkId + ": " + disabled);
+                    }
+                    wifiManager.saveConfiguration();
+                    operationsPerformed++;
+                }
+                
+                // Step 4: Final disconnect attempt if not already disconnected
+                if (!disconnectResult) {
+                    disconnectResult = wifiManager.disconnect();
+                    Log.d(TAG, "Final disconnect attempt result: " + disconnectResult);
+                    if (disconnectResult) operationsPerformed++;
+                }
+                
+                success = operationsPerformed > 0;
+                Log.d(TAG, "Comprehensive disconnect completed. Operations performed: " + operationsPerformed);
+                callbackContext.sendPluginResult(OK(success));
+                
             } catch (Exception e) {
-                Log.e(TAG, "Error in Android 11+ disconnect: " + e.getMessage());
+                Log.e(TAG, "Error in Android 11+ comprehensive disconnect: " + e.getMessage());
                 // Fallback to traditional disconnect
-                boolean result = wifiManager.disconnect();
-                callbackContext.sendPluginResult(OK(result));
+                try {
+                    boolean result = wifiManager.disconnect();
+                    callbackContext.sendPluginResult(OK(result));
+                } catch (Exception fallbackException) {
+                    callbackContext.sendPluginResult(ERROR("Failed to disconnect: " + fallbackException.getMessage()));
+                }
             }
         } else {
             // Android 10 and below - use traditional method
@@ -772,6 +799,87 @@ public class WifiManagerPlugin extends CordovaPlugin {
             // Android 10 and below - not applicable
             Log.d(TAG, "removeAllSuggestions not applicable for Android " + Build.VERSION.SDK_INT);
             callbackContext.sendPluginResult(OK(true));
+        }
+    }
+
+    private void forgetAllNetworks(CallbackContext callbackContext) throws JSONException {
+        Log.d(TAG, "Forgetting all networks for Android " + Build.VERSION.SDK_INT);
+        try {
+            boolean success = true;
+            int removedCount = 0;
+            JSONObject result = new JSONObject();
+            
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                // Android 11+ - remove both suggestions and traditional networks
+                Log.d(TAG, "Android 11+ comprehensive forget all networks");
+                
+                // Remove all network suggestions
+                List<WifiNetworkSuggestion> currentSuggestions = wifiManager.getNetworkSuggestions();
+                if (currentSuggestions != null && !currentSuggestions.isEmpty()) {
+                    Log.d(TAG, "Removing " + currentSuggestions.size() + " network suggestions");
+                    int suggestionResult = wifiManager.removeNetworkSuggestions(currentSuggestions);
+                    if (suggestionResult == WifiManager.STATUS_NETWORK_SUGGESTIONS_SUCCESS) {
+                        removedCount += currentSuggestions.size();
+                        Log.d(TAG, "Successfully removed " + currentSuggestions.size() + " network suggestions");
+                    } else {
+                        Log.w(TAG, "Failed to remove some network suggestions, result: " + suggestionResult);
+                    }
+                }
+                
+                // Remove all traditional networks
+                List<WifiConfiguration> configuredNetworks = wifiManager.getConfiguredNetworks();
+                if (configuredNetworks != null && !configuredNetworks.isEmpty()) {
+                    Log.d(TAG, "Removing " + configuredNetworks.size() + " traditional networks");
+                    for (WifiConfiguration config : configuredNetworks) {
+                        boolean removed = wifiManager.removeNetwork(config.networkId);
+                        if (removed) {
+                            removedCount++;
+                            Log.d(TAG, "Removed traditional network " + config.networkId + " (SSID: " + config.SSID + ")");
+                        } else {
+                            Log.w(TAG, "Failed to remove traditional network " + config.networkId);
+                        }
+                    }
+                }
+                
+                // Save configuration
+                boolean saveResult = wifiManager.saveConfiguration();
+                Log.d(TAG, "Configuration saved: " + saveResult);
+                
+                result.put("suggestionsRemoved", currentSuggestions != null ? currentSuggestions.size() : 0);
+                result.put("traditionalNetworksRemoved", configuredNetworks != null ? configuredNetworks.size() : 0);
+                result.put("totalRemoved", removedCount);
+                result.put("configurationSaved", saveResult);
+                
+            } else {
+                // Android 10 and below - remove traditional networks only
+                Log.d(TAG, "Android 10 and below - removing traditional networks only");
+                List<WifiConfiguration> configuredNetworks = wifiManager.getConfiguredNetworks();
+                if (configuredNetworks != null && !configuredNetworks.isEmpty()) {
+                    Log.d(TAG, "Removing " + configuredNetworks.size() + " traditional networks");
+                    for (WifiConfiguration config : configuredNetworks) {
+                        boolean removed = wifiManager.removeNetwork(config.networkId);
+                        if (removed) {
+                            removedCount++;
+                            Log.d(TAG, "Removed traditional network " + config.networkId + " (SSID: " + config.SSID + ")");
+                        } else {
+                            Log.w(TAG, "Failed to remove traditional network " + config.networkId);
+                        }
+                    }
+                    wifiManager.saveConfiguration();
+                }
+                
+                result.put("traditionalNetworksRemoved", configuredNetworks != null ? configuredNetworks.size() : 0);
+                result.put("totalRemoved", removedCount);
+            }
+            
+            Log.d(TAG, "Successfully removed " + removedCount + " networks total");
+            result.put("success", removedCount > 0);
+            result.put("androidVersion", Build.VERSION.SDK_INT);
+            callbackContext.sendPluginResult(OK(result));
+            
+        } catch (Exception e) {
+            Log.e(TAG, "Error in forgetAllNetworks: " + e.getMessage());
+            callbackContext.sendPluginResult(ERROR("Failed to forget networks: " + e.getMessage()));
         }
     }
 
