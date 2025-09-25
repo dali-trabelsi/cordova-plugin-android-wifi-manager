@@ -4,6 +4,7 @@ var METHODS = [
   'disableNetwork',
   'disconnect',
   'enableNetwork',
+  'ensureWifiEnabled',
   'forgetAllNetworks',
   'getConfiguredNetworks',
   'getConnectionInfo',

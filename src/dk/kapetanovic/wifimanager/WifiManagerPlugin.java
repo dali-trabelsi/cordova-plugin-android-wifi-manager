@@ -218,6 +218,7 @@ public class WifiManagerPlugin extends CordovaPlugin {
         else if(action.equals(ACTION_GET_CURRENT_NETWORK)) getCurrentNetwork(callbackContext);
         else if(action.equals("checkPermissions")) checkPermissions(callbackContext);
         else if(action.equals(ACTION_REQUEST_PERMISSIONS)) requestPermissions(callbackContext);
+        else if(action.equals("ensureWifiEnabled")) ensureWifiEnabled(callbackContext);
         else return false;
 
         return true;
@@ -961,6 +962,63 @@ public class WifiManagerPlugin extends CordovaPlugin {
         boolean enabled = args.getBoolean(0);
         boolean result = wifiManager.setWifiEnabled(enabled);
         callbackContext.sendPluginResult(OK(result));
+    }
+
+    private void ensureWifiEnabled(CallbackContext callbackContext) throws JSONException {
+        Log.d(TAG, "ensureWifiEnabled called");
+        try {
+            boolean isEnabled = wifiManager.isWifiEnabled();
+            Log.d(TAG, "WiFi currently enabled: " + isEnabled);
+            int totalWaited = 0;
+            boolean enableAttempted = false;
+            
+            if (!isEnabled) {
+                Log.d(TAG, "WiFi is disabled, attempting to enable...");
+                boolean enableResult = wifiManager.setWifiEnabled(true);
+                Log.d(TAG, "WiFi enable result: " + enableResult);
+                enableAttempted = true;
+                
+                if (enableResult) {
+                    // Wait for WiFi to actually become enabled
+                    int maxWaitTime = 10000; // 10 seconds
+                    int waitInterval = 500; // 500ms
+                    
+                    while (totalWaited < maxWaitTime) {
+                        try {
+                            Thread.sleep(waitInterval);
+                            totalWaited += waitInterval;
+                            
+                            isEnabled = wifiManager.isWifiEnabled();
+                            Log.d(TAG, "WiFi enable check after " + totalWaited + "ms: " + isEnabled);
+                            
+                            if (isEnabled) {
+                                Log.d(TAG, "WiFi successfully enabled after " + totalWaited + "ms");
+                                break;
+                            }
+                        } catch (InterruptedException e) {
+                            Log.w(TAG, "Interrupted while waiting for WiFi to enable");
+                            break;
+                        }
+                    }
+                }
+            }
+            
+            // Final check
+            isEnabled = wifiManager.isWifiEnabled();
+            Log.d(TAG, "Final WiFi enabled status: " + isEnabled);
+            
+            JSONObject result = new JSONObject();
+            result.put("enabled", isEnabled);
+            result.put("wasAlreadyEnabled", !enableAttempted);
+            result.put("enableAttempted", enableAttempted);
+            result.put("waitTimeMs", totalWaited);
+            
+            callbackContext.sendPluginResult(OK(result));
+            
+        } catch (Exception e) {
+            Log.e(TAG, "Error in ensureWifiEnabled: " + e.getMessage());
+            callbackContext.sendPluginResult(ERROR("Failed to ensure WiFi is enabled: " + e.getMessage()));
+        }
     }
 
     private void startScan(CallbackContext callbackContext) throws JSONException {
