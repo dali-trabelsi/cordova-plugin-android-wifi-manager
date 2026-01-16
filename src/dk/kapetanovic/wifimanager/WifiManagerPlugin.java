@@ -22,6 +22,7 @@ import android.net.Network;
 import android.net.NetworkCapabilities;
 import android.net.NetworkRequest;
 import android.net.wifi.WifiNetworkSpecifier;
+import android.util.Log;
 
 import org.apache.cordova.CallbackContext;
 import org.apache.cordova.CordovaInterface;
@@ -40,8 +41,13 @@ import java.util.ArrayList;
 import java.util.List;
 
 public class WifiManagerPlugin extends CordovaPlugin {
+    private static final String TAG = "WifiManagerPlugin";
     private static final String ACCESS_COARSE_LOCATION = Manifest.permission.ACCESS_COARSE_LOCATION;
     private static final String ACCESS_FINE_LOCATION = Manifest.permission.ACCESS_FINE_LOCATION;
+    private static final String ACCESS_WIFI_STATE = Manifest.permission.ACCESS_WIFI_STATE;
+    private static final String CHANGE_WIFI_STATE = Manifest.permission.CHANGE_WIFI_STATE;
+    private static final String ACCESS_NETWORK_STATE = Manifest.permission.ACCESS_NETWORK_STATE;
+    private static final String NEARBY_WIFI_DEVICES = "android.permission.NEARBY_WIFI_DEVICES";
     private static final String ACTION_MANAGE_WRITE_SETTINGS = Settings.ACTION_MANAGE_WRITE_SETTINGS;
 
     private static final String WIFI_AP_STATE_CHANGED_ACTION = getStringField("WIFI_AP_STATE_CHANGED_ACTION");
@@ -74,6 +80,7 @@ public class WifiManagerPlugin extends CordovaPlugin {
     private static final String ACTION_REASSOCIATE = "reassociate";
     private static final String ACTION_RECONNECT = "reconnect";
     private static final String ACTION_REMOVE_NETWORK = "removeNetwork";
+    private static final String ACTION_REMOVE_ALL_SUGGESTIONS = "removeAllSuggestions";
     private static final String ACTION_SAVE_CONFIGURATION = "saveConfiguration";
     private static final String ACTION_SET_WIFI_AP_CONFIGURATION = "setWifiApConfiguration";
     private static final String ACTION_SET_WIFI_AP_ENABLED = "setWifiApEnabled";
@@ -81,6 +88,9 @@ public class WifiManagerPlugin extends CordovaPlugin {
     private static final String ACTION_START_SCAN = "startScan";
     private static final String ACTION_UPDATE_NETWORK = "updateNetwork";
     private static final String ACTION_ON_CHANGE = "onChange";
+    private static final String ACTION_IS_WIFI_CONNECTED = "isWifiConnected";
+    private static final String ACTION_GET_CURRENT_NETWORK = "getCurrentNetwork";
+    private static final String ACTION_REQUEST_PERMISSIONS = "requestPermissions";
 
     private WifiManager wifiManager;
     private volatile CallbackContext onChange;
@@ -195,6 +205,8 @@ public class WifiManagerPlugin extends CordovaPlugin {
         else if(action.equals(ACTION_REASSOCIATE)) reassociate(callbackContext);
         else if(action.equals(ACTION_RECONNECT)) reconnect(callbackContext);
         else if(action.equals(ACTION_REMOVE_NETWORK)) removeNetwork(args, callbackContext);
+        else if(action.equals(ACTION_REMOVE_ALL_SUGGESTIONS)) removeAllSuggestions(callbackContext);
+        else if(action.equals("forgetAllNetworks")) forgetAllNetworks(callbackContext);
         else if(action.equals(ACTION_SAVE_CONFIGURATION)) saveConfiguration(callbackContext);
         else if(action.equals(ACTION_SET_WIFI_AP_CONFIGURATION)) return setWifiApConfiguration(args, callbackContext);
         else if(action.equals(ACTION_SET_WIFI_AP_ENABLED)) return setWifiApEnabled(args, callbackContext);
@@ -202,47 +214,232 @@ public class WifiManagerPlugin extends CordovaPlugin {
         else if(action.equals(ACTION_START_SCAN)) startScan(callbackContext);
         else if(action.equals(ACTION_UPDATE_NETWORK)) updateNetwork(args, callbackContext);
         else if(action.equals(ACTION_ON_CHANGE)) onChange(callbackContext);
+        else if(action.equals(ACTION_IS_WIFI_CONNECTED)) isWifiConnected(callbackContext);
+        else if(action.equals(ACTION_GET_CURRENT_NETWORK)) getCurrentNetwork(callbackContext);
+        else if(action.equals("checkPermissions")) checkPermissions(callbackContext);
+        else if(action.equals(ACTION_REQUEST_PERMISSIONS)) requestPermissions(callbackContext);
+        else if(action.equals("ensureWifiEnabled")) ensureWifiEnabled(callbackContext);
         else return false;
 
         return true;
     }
 
   private void addNetwork(JSONArray args, CallbackContext callbackContext) throws JSONException {
+    Log.d(TAG, "addNetwork called with Android SDK: " + Build.VERSION.SDK_INT);
+    
     JSONObject json = args.getJSONObject(0);
-    WifiConfiguration wifiConfig = fromJSONWifiConfiguration(json);
-    // With (for Android 10+):
-    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-      // Use WifiNetworkSuggestion for Android 10+
-      WifiNetworkSuggestion suggestion = new WifiNetworkSuggestion.Builder()
-        .setSsid(wifiConfig.SSID.replace("\"", ""))
-        .setWpa2Passphrase(wifiConfig.preSharedKey.replace("\"", ""))
-        .setIsAppInteractionRequired(true) // Requires user interaction
-        .build();
+    String ssid = json.getString("SSID");
+    String password = json.optString("preSharedKey", "");
+    
+    Log.d(TAG, "Original SSID: " + ssid + ", Password length: " + password.length());
+    
+    // Remove quotes from SSID if present
+    if (ssid.startsWith("\"") && ssid.endsWith("\"")) {
+      ssid = ssid.substring(1, ssid.length() - 1);
+    }
+    if (password.startsWith("\"") && password.endsWith("\"")) {
+      password = password.substring(1, password.length() - 1);
+    }
+    
+    Log.d(TAG, "Cleaned SSID: " + ssid + ", Password: " + (password.isEmpty() ? "empty" : "provided"));
 
-      List<WifiNetworkSuggestion> suggestions = new ArrayList<>();
-      suggestions.add(suggestion);
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+          // Android 11+ - Use legacy API directly as suggestion API doesn't actually connect
+          Log.d(TAG, "[ANDROID11_DEBUG] Android 11+ detected, using legacy WifiConfiguration API for actual connection");
+          
+          try {
+            WifiConfiguration wifiConfig = new WifiConfiguration();
+            wifiConfig.SSID = "\"" + ssid + "\"";
+            
+            if (!password.isEmpty()) {
+              Log.d(TAG, "[ANDROID11_DEBUG] Adding WPA2 passphrase for Android 11+");
+              wifiConfig.preSharedKey = "\"" + password + "\"";
+              wifiConfig.allowedKeyManagement.set(WifiConfiguration.KeyMgmt.WPA_PSK);
+              wifiConfig.allowedProtocols.set(WifiConfiguration.Protocol.RSN);
+              wifiConfig.allowedProtocols.set(WifiConfiguration.Protocol.WPA);
+              wifiConfig.allowedKeyManagement.set(WifiConfiguration.KeyMgmt.WPA_PSK);
+              wifiConfig.allowedPairwiseCiphers.set(WifiConfiguration.PairwiseCipher.CCMP);
+              wifiConfig.allowedPairwiseCiphers.set(WifiConfiguration.PairwiseCipher.TKIP);
+              wifiConfig.allowedGroupCiphers.set(WifiConfiguration.GroupCipher.WEP40);
+              wifiConfig.allowedGroupCiphers.set(WifiConfiguration.GroupCipher.WEP104);
+              wifiConfig.allowedGroupCiphers.set(WifiConfiguration.GroupCipher.CCMP);
+              wifiConfig.allowedGroupCiphers.set(WifiConfiguration.GroupCipher.TKIP);
+            } else {
+              Log.d(TAG, "[ANDROID11_DEBUG] No password provided, creating open network for Android 11+");
+              wifiConfig.allowedKeyManagement.set(WifiConfiguration.KeyMgmt.NONE);
+            }
+            
+            Log.d(TAG, "Adding network configuration for SSID: " + ssid);
+            
+            int networkId = wifiManager.addNetwork(wifiConfig);
+            Log.d(TAG, "addNetwork result: " + networkId);
+            
+            if (networkId != -1) {
+              Log.d(TAG, "Network added successfully, enabling...");
+              boolean enabled = wifiManager.enableNetwork(networkId, true);
+              boolean saved = wifiManager.saveConfiguration();
+              wifiManager.startScan();
+              Log.d(TAG, "Network enabled and saved, scan started");
+              callbackContext.sendPluginResult(OK(networkId));
+            } else {
+              Log.e(TAG, "Failed to add network configuration - trying fallback approach");
+              
+              // Try a simpler configuration as fallback
+              try {
+                WifiConfiguration simpleConfig = new WifiConfiguration();
+                simpleConfig.SSID = "\"" + ssid + "\"";
+                
+                if (!password.isEmpty()) {
+                  simpleConfig.preSharedKey = "\"" + password + "\"";
+                  simpleConfig.allowedKeyManagement.set(WifiConfiguration.KeyMgmt.WPA_PSK);
+                } else {
+                  simpleConfig.allowedKeyManagement.set(WifiConfiguration.KeyMgmt.NONE);
+                }
+                
+                int simpleNetworkId = wifiManager.addNetwork(simpleConfig);
+                Log.d(TAG, "Simple config addNetwork result: " + simpleNetworkId);
+                
+                if (simpleNetworkId != -1) {
+                  Log.d(TAG, "Simple configuration successful, enabling...");
+                  wifiManager.enableNetwork(simpleNetworkId, true);
+                  wifiManager.saveConfiguration();
+                  wifiManager.startScan();
+                  callbackContext.sendPluginResult(OK(simpleNetworkId));
+                } else {
+                  Log.e(TAG, "Both detailed and simple configurations failed");
+                  // Try suggestion API as last resort
+                  Log.d(TAG, "Falling back to WifiNetworkSuggestion API...");
+                  
+                  WifiNetworkSuggestion.Builder builder = new WifiNetworkSuggestion.Builder()
+                    .setSsid(ssid)
+                    .setIsAppInteractionRequired(true);
+                  
+                  if (!password.isEmpty()) {
+                    builder.setWpa2Passphrase(password);
+                  }
+                  
+                  WifiNetworkSuggestion suggestion = builder.build();
+                  List<WifiNetworkSuggestion> suggestions = new ArrayList<>();
+                  suggestions.add(suggestion);
+                  
+                  int suggestionResult = wifiManager.addNetworkSuggestions(suggestions);
+                  Log.d(TAG, "Suggestion API result: " + suggestionResult);
+                  
+                  if (suggestionResult == WifiManager.STATUS_NETWORK_SUGGESTIONS_SUCCESS) {
+                    wifiManager.startScan();
+                    JSONObject response = new JSONObject();
+                    response.put("status", "SUCCESS");
+                    response.put("message", "Network suggestion added as fallback");
+                    response.put("androidVersion", "11+");
+                    response.put("ssid", ssid);
+                    response.put("requiresMonitoring", true);
+                    callbackContext.sendPluginResult(OK(response));
+                  } else {
+                    callbackContext.sendPluginResult(ERROR("All connection methods failed for Android 11+"));
+                  }
+                }
+              } catch (Exception fallbackException) {
+                Log.e(TAG, "Fallback failed: " + fallbackException.getMessage());
+                callbackContext.sendPluginResult(ERROR("Failed to add network configuration: " + fallbackException.getMessage()));
+              }
+            }
+          } catch (Exception e) {
+            String errorMsg = "Exception in Android 11+ network configuration: " + e.getMessage();
+            Log.e(TAG, "[ANDROID11_DEBUG] " + errorMsg, e);
+            callbackContext.sendPluginResult(ERROR(errorMsg));
+          }
+        } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+          // Android 10 - Use WifiNetworkSuggestion
+          Log.d(TAG, "[ANDROID11_DEBUG] Android 10 detected, using WifiNetworkSuggestion API");
+          
+          try {
+            WifiNetworkSuggestion.Builder builder = new WifiNetworkSuggestion.Builder()
+              .setSsid(ssid)
+              .setIsAppInteractionRequired(false);
 
-      wifiManager.addNetworkSuggestions(suggestions);
+            if (!password.isEmpty()) {
+              Log.d(TAG, "[ANDROID11_DEBUG] Adding WPA2 passphrase for Android 10");
+              builder.setWpa2Passphrase(password);
+            } else {
+              Log.d(TAG, "[ANDROID11_DEBUG] No password provided, creating open network suggestion for Android 10");
+            }
 
-      // Check if the suggestion was successfully added
-      int status = 0;
-      if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-        status = wifiManager.getNetworkSuggestions().size();
-      }
-      if (status > 0) {
-        callbackContext.sendPluginResult(OK("Network suggestion added"));
-      } else {
-        callbackContext.sendPluginResult(ERROR("Failed to add network suggestion"));
-      }
+            WifiNetworkSuggestion suggestion = builder.build();
+            List<WifiNetworkSuggestion> suggestions = new ArrayList<>();
+            suggestions.add(suggestion);
+
+            Log.d(TAG, "[ANDROID11_DEBUG] Adding network suggestion for SSID: " + ssid);
+            String securityType = password.isEmpty() ? "OPEN" : "WPA2";
+            Log.d(TAG, "[ANDROID11_DEBUG] Security type: " + securityType);
+            Log.d(TAG, "[ANDROID11_DEBUG] Password length: " + (password != null ? password.length() : 0));
+            
+            int result = wifiManager.addNetworkSuggestions(suggestions);
+            Log.d(TAG, "[ANDROID11_DEBUG] addNetworkSuggestions result: " + result);
+            
+            if (result == WifiManager.STATUS_NETWORK_SUGGESTIONS_SUCCESS) {
+              Log.d(TAG, "[ANDROID11_DEBUG] Network suggestion added successfully for Android 10");
+              wifiManager.startScan();
+              
+              JSONObject response = new JSONObject();
+              try {
+                response.put("status", "SUCCESS");
+                response.put("message", "Network suggestion added successfully");
+                response.put("androidVersion", "10");
+                response.put("ssid", ssid);
+                response.put("requiresMonitoring", true);
+                callbackContext.sendPluginResult(OK(response));
+              } catch (JSONException e) {
+                Log.e(TAG, "Error creating response JSON", e);
+                callbackContext.sendPluginResult(OK("Network suggestion added successfully"));
+              }
+            } else {
+              String errorMsg = "Failed to add network suggestion for Android 10. Status: " + result;
+              Log.e(TAG, "[ANDROID11_DEBUG] " + errorMsg);
+              callbackContext.sendPluginResult(ERROR(errorMsg));
+            }
+          } catch (Exception e) {
+            String errorMsg = "Exception in Android 10 network suggestion: " + e.getMessage();
+            Log.e(TAG, "[ANDROID11_DEBUG] " + errorMsg, e);
+            callbackContext.sendPluginResult(ERROR(errorMsg));
+          }
     } else {
-      // Legacy code for older Android versions
-      int networkId = wifiManager.addNetwork(wifiConfig);
-      if (networkId == -1) {
-        callbackContext.sendPluginResult(ERROR("Failed to add network"));
-        return;
+      Log.d(TAG, "Using legacy WifiConfiguration for Android 9 and below");
+      
+      try {
+        // Legacy code for older Android versions
+        WifiConfiguration wifiConfig = new WifiConfiguration();
+        wifiConfig.SSID = "\"" + ssid + "\"";
+        
+        if (!password.isEmpty()) {
+          Log.d(TAG, "Setting up WPA2 configuration");
+          wifiConfig.preSharedKey = "\"" + password + "\"";
+          wifiConfig.allowedKeyManagement.set(WifiConfiguration.KeyMgmt.WPA_PSK);
+        } else {
+          Log.d(TAG, "Setting up open network configuration");
+          wifiConfig.allowedKeyManagement.set(WifiConfiguration.KeyMgmt.NONE);
+        }
+
+        Log.d(TAG, "Adding network configuration for SSID: " + ssid);
+        int networkId = wifiManager.addNetwork(wifiConfig);
+        
+        Log.d(TAG, "addNetwork returned networkId: " + networkId);
+        
+        if (networkId == -1) {
+          Log.e(TAG, "Failed to add network configuration");
+          callbackContext.sendPluginResult(ERROR("Failed to add network configuration"));
+          return;
+        }
+        
+        Log.d(TAG, "Enabling network with ID: " + networkId);
+        boolean enabled = wifiManager.enableNetwork(networkId, true);
+        Log.d(TAG, "enableNetwork result: " + enabled);
+        
+        callbackContext.sendPluginResult(OK(networkId));
+      } catch (Exception e) {
+        String errorMsg = "Exception in legacy addNetwork: " + e.getMessage();
+        Log.e(TAG, errorMsg, e);
+        callbackContext.sendPluginResult(ERROR(errorMsg));
       }
-      boolean enabled = wifiManager.enableNetwork(networkId, true);
-      callbackContext.sendPluginResult(OK(enabled));
     }
   }
 
@@ -253,8 +450,67 @@ public class WifiManagerPlugin extends CordovaPlugin {
     }
 
     private void disconnect(CallbackContext callbackContext) throws JSONException {
-        boolean result = wifiManager.disconnect();
-        callbackContext.sendPluginResult(OK(result));
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            // Android 11+ - comprehensive disconnection
+            Log.d(TAG, "Android 11+ comprehensive disconnect");
+            try {
+                boolean success = false;
+                int operationsPerformed = 0;
+                
+                // Step 1: Disconnect from current network
+                boolean disconnectResult = wifiManager.disconnect();
+                Log.d(TAG, "Traditional disconnect result: " + disconnectResult);
+                if (disconnectResult) operationsPerformed++;
+                
+                // Step 2: Remove all network suggestions
+                List<WifiNetworkSuggestion> currentSuggestions = wifiManager.getNetworkSuggestions();
+                if (currentSuggestions != null && !currentSuggestions.isEmpty()) {
+                    Log.d(TAG, "Removing " + currentSuggestions.size() + " network suggestions");
+                    int suggestionResult = wifiManager.removeNetworkSuggestions(currentSuggestions);
+                    Log.d(TAG, "removeNetworkSuggestions result: " + suggestionResult);
+                    if (suggestionResult == WifiManager.STATUS_NETWORK_SUGGESTIONS_SUCCESS) {
+                        operationsPerformed++;
+                    }
+                }
+                
+                // Step 3: Remove traditional networks (but don't remove all, just disconnect)
+                List<WifiConfiguration> configuredNetworks = wifiManager.getConfiguredNetworks();
+                if (configuredNetworks != null && !configuredNetworks.isEmpty()) {
+                    Log.d(TAG, "Found " + configuredNetworks.size() + " traditional networks, disabling them");
+                    for (WifiConfiguration config : configuredNetworks) {
+                        boolean disabled = wifiManager.disableNetwork(config.networkId);
+                        Log.d(TAG, "Disabled network " + config.networkId + ": " + disabled);
+                    }
+                    wifiManager.saveConfiguration();
+                    operationsPerformed++;
+                }
+                
+                // Step 4: Final disconnect attempt if not already disconnected
+                if (!disconnectResult) {
+                    disconnectResult = wifiManager.disconnect();
+                    Log.d(TAG, "Final disconnect attempt result: " + disconnectResult);
+                    if (disconnectResult) operationsPerformed++;
+                }
+                
+                success = operationsPerformed > 0;
+                Log.d(TAG, "Comprehensive disconnect completed. Operations performed: " + operationsPerformed);
+                callbackContext.sendPluginResult(OK(success));
+                
+            } catch (Exception e) {
+                Log.e(TAG, "Error in Android 11+ comprehensive disconnect: " + e.getMessage());
+                // Fallback to traditional disconnect
+                try {
+                    boolean result = wifiManager.disconnect();
+                    callbackContext.sendPluginResult(OK(result));
+                } catch (Exception fallbackException) {
+                    callbackContext.sendPluginResult(ERROR("Failed to disconnect: " + fallbackException.getMessage()));
+                }
+            }
+        } else {
+            // Android 10 and below - use traditional method
+            boolean result = wifiManager.disconnect();
+            callbackContext.sendPluginResult(OK(result));
+        }
     }
 
     private void enableNetwork(JSONArray args, CallbackContext callbackContext) throws JSONException {
@@ -265,21 +521,96 @@ public class WifiManagerPlugin extends CordovaPlugin {
     }
 
     private void getConfiguredNetworks(CallbackContext callbackContext) throws JSONException {
-        List<WifiConfiguration> networks = wifiManager.getConfiguredNetworks();
-        JSONArray json = new JSONArray();
-
-        if(networks != null) {
-            for(WifiConfiguration wifiConfig : networks) {
-                json.put(toJSON(wifiConfig));
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            // Android 11+ - combine traditional networks and suggestions
+            Log.d(TAG, "Android 11+ getConfiguredNetworks - combining traditional and suggestion networks");
+            try {
+                List<WifiConfiguration> traditionalNetworks = wifiManager.getConfiguredNetworks();
+                List<WifiNetworkSuggestion> suggestions = wifiManager.getNetworkSuggestions();
+                
+                JSONArray json = new JSONArray();
+                
+                // Add traditional networks
+                if(traditionalNetworks != null) {
+                    for(WifiConfiguration wifiConfig : traditionalNetworks) {
+                        JSONObject networkObj = toJSON(wifiConfig);
+                        networkObj.put("type", "traditional");
+                        json.put(networkObj);
+                    }
+                }
+                
+                // Add suggestion networks
+                if(suggestions != null) {
+                    for(WifiNetworkSuggestion suggestion : suggestions) {
+                        JSONObject networkObj = new JSONObject();
+                        networkObj.put("networkId", -1); // Suggestions don't have networkId
+                        networkObj.put("SSID", suggestion.getSsid());
+                        networkObj.put("BSSID", "");
+                        networkObj.put("preSharedKey", "");
+                        networkObj.put("allowedKeyManagement", "");
+                        networkObj.put("type", "suggestion");
+                        networkObj.put("isAppInteractionRequired", suggestion.isAppInteractionRequired());
+                        json.put(networkObj);
+                    }
+                }
+                
+                Log.d(TAG, "Combined networks: " + json.length() + " total (" + 
+                      (traditionalNetworks != null ? traditionalNetworks.size() : 0) + " traditional, " + 
+                      (suggestions != null ? suggestions.size() : 0) + " suggestions)");
+                
+                callbackContext.sendPluginResult(OK(json));
+            } catch (Exception e) {
+                Log.e(TAG, "Error in Android 11+ getConfiguredNetworks: " + e.getMessage());
+                // Fallback to traditional method
+                List<WifiConfiguration> networks = wifiManager.getConfiguredNetworks();
+                JSONArray json = new JSONArray();
+                if(networks != null) {
+                    for(WifiConfiguration wifiConfig : networks) {
+                        json.put(toJSON(wifiConfig));
+                    }
+                }
+                callbackContext.sendPluginResult(OK(json));
             }
+        } else {
+            // Android 10 and below - use traditional method
+            List<WifiConfiguration> networks = wifiManager.getConfiguredNetworks();
+            JSONArray json = new JSONArray();
+            if(networks != null) {
+                for(WifiConfiguration wifiConfig : networks) {
+                    json.put(toJSON(wifiConfig));
+                }
+            }
+            callbackContext.sendPluginResult(OK(json));
         }
-
-        callbackContext.sendPluginResult(OK(json));
     }
 
     private void getConnectionInfo(CallbackContext callbackContext) throws JSONException {
         WifiInfo wifiInfo = wifiManager.getConnectionInfo();
         JSONObject json = toJSON(wifiInfo);
+        
+        // Add additional connection status information
+        if (wifiInfo != null) {
+            json.put("isConnected", wifiInfo.getNetworkId() != -1);
+            json.put("isWifiEnabled", wifiManager.isWifiEnabled());
+            
+            // Get current IP address
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                try {
+                    ConnectivityManager cm = (ConnectivityManager) cordova.getActivity()
+                        .getApplicationContext().getSystemService(Context.CONNECTIVITY_SERVICE);
+                    Network activeNetwork = cm.getActiveNetwork();
+                    if (activeNetwork != null) {
+                        NetworkCapabilities capabilities = cm.getNetworkCapabilities(activeNetwork);
+                        if (capabilities != null && capabilities.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)) {
+                            json.put("hasInternetAccess", capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET));
+                        }
+                    }
+                } catch (Exception e) {
+                    // Ignore exceptions for older Android versions
+                }
+            }
+        }
+        
         callbackContext.sendPluginResult(OK(json));
     }
 
@@ -290,30 +621,72 @@ public class WifiManagerPlugin extends CordovaPlugin {
     }
 
     private void getScanResults(CallbackContext callbackContext) throws JSONException {
-        if(hasLocationPermission()) {
+        Log.d(TAG, "getScanResults called from JavaScript");
+        Log.d(TAG, "hasLocationPermission: " + hasLocationPermission());
+        Log.d(TAG, "hasWifiPermissions: " + hasWifiPermissions());
+        Log.d(TAG, "WiFi enabled: " + wifiManager.isWifiEnabled());
+        
+        if(hasLocationPermission() && hasWifiPermissions()) {
             // We should end up here most of the time
+            Log.d(TAG, "Getting scan results with all required permissions");
             getScanResultsWithPermission(callbackContext);
         } else {
+            Log.d(TAG, "Requesting permissions for scan results");
             synchronized(scanResultsCallbacks) {
-                if(hasLocationPermission()) {
+                if(hasLocationPermission() && hasWifiPermissions()) {
                     // We got permission while acquiring lock
+                    Log.d(TAG, "Got permissions while acquiring lock");
                     getScanResultsWithPermission(callbackContext);
                     return;
                 }
 
                 scanResultsCallbacks.add(callbackContext);
+                Log.d(TAG, "Added callback to queue, total callbacks: " + scanResultsCallbacks.size());
 
                 if(scanResultsCallbacks.size() == 1) {
-                    cordova.requestPermission(this, REQUEST_CODE_SCAN_RESULTS, ACCESS_COARSE_LOCATION);
+                    Log.d(TAG, "Requesting all required permissions");
+                    requestAllRequiredPermissions();
                 }
             }
         }
     }
 
     private void getScanResultsWithPermission(CallbackContext callbackContext) throws JSONException {
-        List<ScanResult> scanResults = wifiManager.getScanResults();
-        JSONArray json = toJSON(scanResults);
-        callbackContext.sendPluginResult(OK(json));
+        Log.d(TAG, "getScanResultsWithPermission called");
+        
+        try {
+            List<ScanResult> scanResults = wifiManager.getScanResults();
+            Log.d(TAG, "Found " + (scanResults != null ? scanResults.size() : 0) + " scan results");
+            
+            if (scanResults != null && !scanResults.isEmpty()) {
+                Log.d(TAG, "Processing " + scanResults.size() + " scan results for JavaScript");
+                for (int i = 0; i < Math.min(scanResults.size(), 5); i++) {
+                    ScanResult result = scanResults.get(i);
+                    Log.d(TAG, "Scan result " + i + ": SSID=" + result.SSID + ", BSSID=" + result.BSSID + ", level=" + result.level);
+                }
+                
+                // Convert to JSON and log the result
+                JSONArray json = toJSON(scanResults);
+                Log.d(TAG, "Converted to JSON array with " + json.length() + " items");
+                Log.d(TAG, "JSON result: " + json.toString());
+                
+                callbackContext.sendPluginResult(OK(json));
+                Log.d(TAG, "Sent scan results to JavaScript successfully");
+            } else {
+                Log.w(TAG, "No scan results available - this may be due to rate limiting or no recent scans");
+                // Try to trigger a scan if we don't have results
+                boolean scanStarted = wifiManager.startScan();
+                Log.d(TAG, "Attempted to start scan due to no results: " + scanStarted);
+                
+                // Send empty array instead of null
+                JSONArray emptyJson = new JSONArray();
+                callbackContext.sendPluginResult(OK(emptyJson));
+                Log.d(TAG, "Sent empty scan results to JavaScript");
+            }
+        } catch (Exception e) {
+            Log.e(TAG, "Exception getting scan results: " + e.getMessage(), e);
+            callbackContext.sendPluginResult(ERROR("Exception getting scan results: " + e.getMessage()));
+        }
     }
 
     private boolean getWifiApConfiguration(CallbackContext callbackContext) throws JSONException {
@@ -403,6 +776,114 @@ public class WifiManagerPlugin extends CordovaPlugin {
         callbackContext.sendPluginResult(OK(result));
     }
 
+    private void removeAllSuggestions(CallbackContext callbackContext) throws JSONException {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            // Android 11+ - remove all network suggestions
+            Log.d(TAG, "Android 11+ removeAllSuggestions - removing all network suggestions");
+            try {
+                List<WifiNetworkSuggestion> currentSuggestions = wifiManager.getNetworkSuggestions();
+                if (currentSuggestions != null && !currentSuggestions.isEmpty()) {
+                    Log.d(TAG, "Removing " + currentSuggestions.size() + " network suggestions");
+                    int result = wifiManager.removeNetworkSuggestions(currentSuggestions);
+                    Log.d(TAG, "removeNetworkSuggestions result: " + result);
+                    boolean success = (result == WifiManager.STATUS_NETWORK_SUGGESTIONS_SUCCESS);
+                    callbackContext.sendPluginResult(OK(success));
+                } else {
+                    Log.d(TAG, "No network suggestions to remove");
+                    callbackContext.sendPluginResult(OK(true));
+                }
+            } catch (Exception e) {
+                Log.e(TAG, "Error in Android 11+ removeAllSuggestions: " + e.getMessage());
+                callbackContext.sendPluginResult(ERROR("Failed to remove suggestions: " + e.getMessage()));
+            }
+        } else {
+            // Android 10 and below - not applicable
+            Log.d(TAG, "removeAllSuggestions not applicable for Android " + Build.VERSION.SDK_INT);
+            callbackContext.sendPluginResult(OK(true));
+        }
+    }
+
+    private void forgetAllNetworks(CallbackContext callbackContext) throws JSONException {
+        Log.d(TAG, "Forgetting all networks for Android " + Build.VERSION.SDK_INT);
+        try {
+            boolean success = true;
+            int removedCount = 0;
+            JSONObject result = new JSONObject();
+            
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                // Android 11+ - remove both suggestions and traditional networks
+                Log.d(TAG, "Android 11+ comprehensive forget all networks");
+                
+                // Remove all network suggestions
+                List<WifiNetworkSuggestion> currentSuggestions = wifiManager.getNetworkSuggestions();
+                if (currentSuggestions != null && !currentSuggestions.isEmpty()) {
+                    Log.d(TAG, "Removing " + currentSuggestions.size() + " network suggestions");
+                    int suggestionResult = wifiManager.removeNetworkSuggestions(currentSuggestions);
+                    if (suggestionResult == WifiManager.STATUS_NETWORK_SUGGESTIONS_SUCCESS) {
+                        removedCount += currentSuggestions.size();
+                        Log.d(TAG, "Successfully removed " + currentSuggestions.size() + " network suggestions");
+                    } else {
+                        Log.w(TAG, "Failed to remove some network suggestions, result: " + suggestionResult);
+                    }
+                }
+                
+                // Remove all traditional networks
+                List<WifiConfiguration> configuredNetworks = wifiManager.getConfiguredNetworks();
+                if (configuredNetworks != null && !configuredNetworks.isEmpty()) {
+                    Log.d(TAG, "Removing " + configuredNetworks.size() + " traditional networks");
+                    for (WifiConfiguration config : configuredNetworks) {
+                        boolean removed = wifiManager.removeNetwork(config.networkId);
+                        if (removed) {
+                            removedCount++;
+                            Log.d(TAG, "Removed traditional network " + config.networkId + " (SSID: " + config.SSID + ")");
+                        } else {
+                            Log.w(TAG, "Failed to remove traditional network " + config.networkId);
+                        }
+                    }
+                }
+                
+                // Save configuration
+                boolean saveResult = wifiManager.saveConfiguration();
+                Log.d(TAG, "Configuration saved: " + saveResult);
+                
+                result.put("suggestionsRemoved", currentSuggestions != null ? currentSuggestions.size() : 0);
+                result.put("traditionalNetworksRemoved", configuredNetworks != null ? configuredNetworks.size() : 0);
+                result.put("totalRemoved", removedCount);
+                result.put("configurationSaved", saveResult);
+                
+            } else {
+                // Android 10 and below - remove traditional networks only
+                Log.d(TAG, "Android 10 and below - removing traditional networks only");
+                List<WifiConfiguration> configuredNetworks = wifiManager.getConfiguredNetworks();
+                if (configuredNetworks != null && !configuredNetworks.isEmpty()) {
+                    Log.d(TAG, "Removing " + configuredNetworks.size() + " traditional networks");
+                    for (WifiConfiguration config : configuredNetworks) {
+                        boolean removed = wifiManager.removeNetwork(config.networkId);
+                        if (removed) {
+                            removedCount++;
+                            Log.d(TAG, "Removed traditional network " + config.networkId + " (SSID: " + config.SSID + ")");
+                        } else {
+                            Log.w(TAG, "Failed to remove traditional network " + config.networkId);
+                        }
+                    }
+                    wifiManager.saveConfiguration();
+                }
+                
+                result.put("traditionalNetworksRemoved", configuredNetworks != null ? configuredNetworks.size() : 0);
+                result.put("totalRemoved", removedCount);
+            }
+            
+            Log.d(TAG, "Successfully removed " + removedCount + " networks total");
+            result.put("success", removedCount > 0);
+            result.put("androidVersion", Build.VERSION.SDK_INT);
+            callbackContext.sendPluginResult(OK(result));
+            
+        } catch (Exception e) {
+            Log.e(TAG, "Error in forgetAllNetworks: " + e.getMessage());
+            callbackContext.sendPluginResult(ERROR("Failed to forget networks: " + e.getMessage()));
+        }
+    }
+
     private void saveConfiguration(CallbackContext callbackContext) throws JSONException {
         boolean result = wifiManager.saveConfiguration();
         callbackContext.sendPluginResult(OK(result));
@@ -483,9 +964,100 @@ public class WifiManagerPlugin extends CordovaPlugin {
         callbackContext.sendPluginResult(OK(result));
     }
 
+    private void ensureWifiEnabled(CallbackContext callbackContext) throws JSONException {
+        Log.d(TAG, "ensureWifiEnabled called");
+        try {
+            boolean isEnabled = wifiManager.isWifiEnabled();
+            Log.d(TAG, "WiFi currently enabled: " + isEnabled);
+            int totalWaited = 0;
+            boolean enableAttempted = false;
+            
+            if (!isEnabled) {
+                Log.d(TAG, "WiFi is disabled, attempting to enable...");
+                boolean enableResult = wifiManager.setWifiEnabled(true);
+                Log.d(TAG, "WiFi enable result: " + enableResult);
+                enableAttempted = true;
+                
+                if (enableResult) {
+                    // Wait for WiFi to actually become enabled
+                    int maxWaitTime = 10000; // 10 seconds
+                    int waitInterval = 500; // 500ms
+                    
+                    while (totalWaited < maxWaitTime) {
+                        try {
+                            Thread.sleep(waitInterval);
+                            totalWaited += waitInterval;
+                            
+                            isEnabled = wifiManager.isWifiEnabled();
+                            Log.d(TAG, "WiFi enable check after " + totalWaited + "ms: " + isEnabled);
+                            
+                            if (isEnabled) {
+                                Log.d(TAG, "WiFi successfully enabled after " + totalWaited + "ms");
+                                break;
+                            }
+                        } catch (InterruptedException e) {
+                            Log.w(TAG, "Interrupted while waiting for WiFi to enable");
+                            break;
+                        }
+                    }
+                }
+            }
+            
+            // Final check
+            isEnabled = wifiManager.isWifiEnabled();
+            Log.d(TAG, "Final WiFi enabled status: " + isEnabled);
+            
+            JSONObject result = new JSONObject();
+            result.put("enabled", isEnabled);
+            result.put("wasAlreadyEnabled", !enableAttempted);
+            result.put("enableAttempted", enableAttempted);
+            result.put("waitTimeMs", totalWaited);
+            
+            callbackContext.sendPluginResult(OK(result));
+            
+        } catch (Exception e) {
+            Log.e(TAG, "Error in ensureWifiEnabled: " + e.getMessage());
+            callbackContext.sendPluginResult(ERROR("Failed to ensure WiFi is enabled: " + e.getMessage()));
+        }
+    }
+
     private void startScan(CallbackContext callbackContext) throws JSONException {
-        boolean result = wifiManager.startScan();
-        callbackContext.sendPluginResult(OK(result));
+        Log.d(TAG, "startScan called");
+        Log.d(TAG, "WiFi enabled: " + wifiManager.isWifiEnabled());
+        Log.d(TAG, "hasLocationPermission: " + hasLocationPermission());
+        Log.d(TAG, "hasWifiPermissions: " + hasWifiPermissions());
+        
+        if (!wifiManager.isWifiEnabled()) {
+            Log.w(TAG, "WiFi is not enabled, cannot start scan");
+            callbackContext.sendPluginResult(ERROR("WiFi is not enabled"));
+            return;
+        }
+        
+        if (!hasLocationPermission()) {
+            Log.w(TAG, "Location permission not granted, scan may return empty results");
+        }
+        
+        if (!hasWifiPermissions()) {
+            Log.w(TAG, "WiFi permissions not granted, scan may fail");
+        }
+        
+        try {
+            boolean result = wifiManager.startScan();
+            Log.d(TAG, "startScan result: " + result);
+            
+            if (result) {
+                Log.d(TAG, "WiFi scan started successfully");
+                callbackContext.sendPluginResult(OK(true));
+            } else {
+                Log.w(TAG, "WiFi scan failed to start - this may be due to rate limiting or system restrictions");
+                // Even if startScan returns false, we can still try to get existing scan results
+                // This is common on Android due to rate limiting
+                callbackContext.sendPluginResult(OK(false));
+            }
+        } catch (Exception e) {
+            Log.e(TAG, "Exception during startScan: " + e.getMessage(), e);
+            callbackContext.sendPluginResult(ERROR("Exception during scan: " + e.getMessage()));
+        }
     }
 
     private void updateNetwork(JSONArray args, CallbackContext callbackContext) throws JSONException {
@@ -497,6 +1069,108 @@ public class WifiManagerPlugin extends CordovaPlugin {
 
     private void onChange(CallbackContext callbackContext) {
         onChange = callbackContext;
+    }
+
+    private void isWifiConnected(CallbackContext callbackContext) throws JSONException {
+        Log.d(TAG, "isWifiConnected called");
+        WifiInfo wifiInfo = wifiManager.getConnectionInfo();
+        boolean connected = wifiInfo != null && wifiInfo.getNetworkId() != -1;
+        
+        if (wifiInfo != null) {
+            Log.d(TAG, "WiFi Info - NetworkId: " + wifiInfo.getNetworkId() + ", SSID: " + wifiInfo.getSSID() + ", BSSID: " + wifiInfo.getBSSID());
+            Log.d(TAG, "WiFi Info - RSSI: " + wifiInfo.getRssi() + ", LinkSpeed: " + wifiInfo.getLinkSpeed());
+            Log.d(TAG, "WiFi Info - SupplicantState: " + wifiInfo.getSupplicantState());
+        } else {
+            Log.d(TAG, "WiFi Info is null");
+        }
+        
+        // Additional connection checks
+        boolean wifiEnabled = wifiManager.isWifiEnabled();
+        Log.d(TAG, "WiFi enabled: " + wifiEnabled);
+        
+        // Check if we have a valid IP address
+        if (wifiInfo != null) {
+            int ipAddress = wifiInfo.getIpAddress();
+            String ipString = String.format("%d.%d.%d.%d",
+                (ipAddress & 0xff),
+                (ipAddress >> 8 & 0xff),
+                (ipAddress >> 16 & 0xff),
+                (ipAddress >> 24 & 0xff));
+            Log.d(TAG, "WiFi IP Address: " + ipString);
+        }
+        
+        Log.d(TAG, "WiFi connected: " + connected);
+        callbackContext.sendPluginResult(OK(connected));
+    }
+
+    private void checkPermissions(CallbackContext callbackContext) throws JSONException {
+        Log.d(TAG, "checkPermissions called");
+        JSONObject permissions = new JSONObject();
+        
+        permissions.put("hasLocationPermission", hasLocationPermission());
+        permissions.put("hasWifiPermissions", hasWifiPermissions());
+        permissions.put("hasWriteSettingsPermission", hasWriteSettingsPermission());
+        permissions.put("androidVersion", Build.VERSION.SDK_INT);
+        permissions.put("wifiEnabled", wifiManager.isWifiEnabled());
+        
+        // Individual permission status
+        permissions.put("hasAccessWifiState", cordova.hasPermission(ACCESS_WIFI_STATE));
+        permissions.put("hasChangeWifiState", cordova.hasPermission(CHANGE_WIFI_STATE));
+        permissions.put("hasAccessNetworkState", cordova.hasPermission(ACCESS_NETWORK_STATE));
+        permissions.put("hasAccessCoarseLocation", cordova.hasPermission(ACCESS_COARSE_LOCATION));
+        permissions.put("hasAccessFineLocation", cordova.hasPermission(ACCESS_FINE_LOCATION));
+        
+        if (Build.VERSION.SDK_INT >= 33) {
+            permissions.put("hasNearbyWifiDevices", cordova.hasPermission(NEARBY_WIFI_DEVICES));
+        }
+        
+        Log.d(TAG, "Permissions check result: " + permissions.toString());
+        callbackContext.sendPluginResult(OK(permissions));
+    }
+
+    private void getCurrentNetwork(CallbackContext callbackContext) throws JSONException {
+        Log.d(TAG, "getCurrentNetwork called");
+        WifiInfo wifiInfo = wifiManager.getConnectionInfo();
+        
+        if (wifiInfo != null) {
+            Log.d(TAG, "WiFi Info available - NetworkId: " + wifiInfo.getNetworkId() + ", SSID: " + wifiInfo.getSSID());
+            Log.d(TAG, "WiFi Info - BSSID: " + wifiInfo.getBSSID() + ", RSSI: " + wifiInfo.getRssi());
+            Log.d(TAG, "WiFi Info - SupplicantState: " + wifiInfo.getSupplicantState());
+            
+            if (wifiInfo.getNetworkId() != -1) {
+                Log.d(TAG, "Current network found - SSID: " + wifiInfo.getSSID() + ", NetworkId: " + wifiInfo.getNetworkId());
+                JSONObject json = new JSONObject();
+                json.put("SSID", wifiInfo.getSSID());
+                json.put("BSSID", wifiInfo.getBSSID());
+                json.put("networkId", wifiInfo.getNetworkId());
+                json.put("rssi", wifiInfo.getRssi());
+                json.put("frequency", wifiInfo.getFrequency());
+                json.put("linkSpeed", wifiInfo.getLinkSpeed());
+                json.put("macAddress", wifiInfo.getMacAddress());
+                json.put("ipAddress", wifiInfo.getIpAddress());
+                json.put("supplicantState", wifiInfo.getSupplicantState().toString());
+                callbackContext.sendPluginResult(OK(json));
+            } else {
+                Log.d(TAG, "No current network connection (NetworkId = -1)");
+                callbackContext.sendPluginResult(OK(JSONObject.NULL));
+            }
+        } else {
+            Log.d(TAG, "WiFi Info is null - no current network connection");
+            callbackContext.sendPluginResult(OK(JSONObject.NULL));
+        }
+    }
+
+    private void requestPermissions(CallbackContext callbackContext) throws JSONException {
+        Log.d(TAG, "requestPermissions called");
+        
+        synchronized(scanResultsCallbacks) {
+            scanResultsCallbacks.add(callbackContext);
+            
+            if(scanResultsCallbacks.size() == 1) {
+                Log.d(TAG, "Requesting all required permissions");
+                requestAllRequiredPermissions();
+            }
+        }
     }
 
     private static JSONObject toJSON(WifiConfiguration wifiConfig) throws JSONException {
@@ -813,17 +1487,39 @@ public class WifiManagerPlugin extends CordovaPlugin {
     }
 
     private static PluginResult OK(Object obj) throws JSONException {
-        return createPluginResult(obj, PluginResult.Status.OK);
+        if (obj instanceof String) {
+            return new PluginResult(PluginResult.Status.OK, (String) obj);
+        } else if (obj instanceof JSONObject) {
+            return new PluginResult(PluginResult.Status.OK, (JSONObject) obj);
+        } else if (obj instanceof JSONArray) {
+            return new PluginResult(PluginResult.Status.OK, (JSONArray) obj);
+        } else if (obj instanceof Integer) {
+            return new PluginResult(PluginResult.Status.OK, (Integer) obj);
+        } else if (obj instanceof Boolean) {
+            return new PluginResult(PluginResult.Status.OK, (Boolean) obj);
+        } else if (obj instanceof Float) {
+            return new PluginResult(PluginResult.Status.OK, (Float) obj);
+        } else {
+            return new PluginResult(PluginResult.Status.OK, obj.toString());
+        }
     }
 
     private static PluginResult ERROR(Object obj) throws JSONException {
-        return createPluginResult(obj, PluginResult.Status.ERROR);
-    }
-
-    private static PluginResult createPluginResult(Object obj, PluginResult.Status status) throws JSONException {
-        JSONObject json = new JSONObject();
-        json.put("data", obj == null ? JSONObject.NULL : obj);
-        return new PluginResult(status, json);
+        if (obj instanceof String) {
+            return new PluginResult(PluginResult.Status.ERROR, (String) obj);
+        } else if (obj instanceof JSONObject) {
+            return new PluginResult(PluginResult.Status.ERROR, (JSONObject) obj);
+        } else if (obj instanceof JSONArray) {
+            return new PluginResult(PluginResult.Status.ERROR, (JSONArray) obj);
+        } else if (obj instanceof Integer) {
+            return new PluginResult(PluginResult.Status.ERROR, (Integer) obj);
+        } else if (obj instanceof Boolean) {
+            return new PluginResult(PluginResult.Status.ERROR, (Boolean) obj);
+        } else if (obj instanceof Float) {
+            return new PluginResult(PluginResult.Status.ERROR, (Float) obj);
+        } else {
+            return new PluginResult(PluginResult.Status.ERROR, obj.toString());
+        }
     }
 
     private static int getIntField(String name) {
@@ -857,6 +1553,54 @@ public class WifiManagerPlugin extends CordovaPlugin {
                 cordova.hasPermission(ACCESS_FINE_LOCATION);
     }
 
+    private boolean hasWifiPermissions() {
+        boolean hasWifiState = cordova.hasPermission(ACCESS_WIFI_STATE);
+        boolean hasChangeWifi = cordova.hasPermission(CHANGE_WIFI_STATE);
+        boolean hasNetworkState = cordova.hasPermission(ACCESS_NETWORK_STATE);
+        
+        Log.d(TAG, "WiFi permissions - ACCESS_WIFI_STATE: " + hasWifiState + 
+              ", CHANGE_WIFI_STATE: " + hasChangeWifi + 
+              ", ACCESS_NETWORK_STATE: " + hasNetworkState);
+        
+        return hasWifiState && hasChangeWifi && hasNetworkState;
+    }
+
+    private void requestAllRequiredPermissions() {
+        List<String> permissionsToRequest = new ArrayList<>();
+        
+        // Always request location permissions
+        if (!hasLocationPermission()) {
+            permissionsToRequest.add(ACCESS_FINE_LOCATION);
+            permissionsToRequest.add(ACCESS_COARSE_LOCATION);
+        }
+        
+        // Request WiFi permissions
+        if (!cordova.hasPermission(ACCESS_WIFI_STATE)) {
+            permissionsToRequest.add(ACCESS_WIFI_STATE);
+        }
+        if (!cordova.hasPermission(CHANGE_WIFI_STATE)) {
+            permissionsToRequest.add(CHANGE_WIFI_STATE);
+        }
+        if (!cordova.hasPermission(ACCESS_NETWORK_STATE)) {
+            permissionsToRequest.add(ACCESS_NETWORK_STATE);
+        }
+        
+        // For Android 13+ (API 33+), request NEARBY_WIFI_DEVICES
+        if (Build.VERSION.SDK_INT >= 33) {
+            if (!cordova.hasPermission(NEARBY_WIFI_DEVICES)) {
+                permissionsToRequest.add(NEARBY_WIFI_DEVICES);
+            }
+        }
+        
+        if (!permissionsToRequest.isEmpty()) {
+            Log.d(TAG, "Requesting permissions: " + permissionsToRequest.toString());
+            cordova.requestPermissions(this, REQUEST_CODE_SCAN_RESULTS, 
+                permissionsToRequest.toArray(new String[0]));
+        } else {
+            Log.d(TAG, "All required permissions already granted");
+        }
+    }
+
     private boolean hasWriteSettingsPermission() {
         Context context = cordova
                 .getActivity()
@@ -869,7 +1613,12 @@ public class WifiManagerPlugin extends CordovaPlugin {
     private class WifiBroadcastReceiver extends BroadcastReceiver {
         @Override
         public void onReceive(Context context, Intent intent) {
-            if(onChange == null) return;
+            Log.d(TAG, "WifiBroadcastReceiver.onReceive - Action: " + intent.getAction());
+            
+            if(onChange == null) {
+                Log.d(TAG, "onChange callback is null, ignoring event");
+                return;
+            }
 
             PluginResult result = null;
             String event = null;
