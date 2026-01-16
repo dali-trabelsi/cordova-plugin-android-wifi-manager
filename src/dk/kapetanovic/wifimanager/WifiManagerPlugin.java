@@ -1033,12 +1033,12 @@ public class WifiManagerPlugin extends CordovaPlugin {
             return;
         }
         
-        if (!hasLocationPermission()) {
-            Log.w(TAG, "Location permission not granted, scan may return empty results");
-        }
-        
-        if (!hasWifiPermissions()) {
-            Log.w(TAG, "WiFi permissions not granted, scan may fail");
+        // If required permissions are missing, request them instead of triggering SecurityException.
+        if (!hasLocationPermission() || !hasWifiPermissions()) {
+            Log.w(TAG, "Missing permissions for WiFi scan. Requesting permissions...");
+            requestAllRequiredPermissions();
+            callbackContext.sendPluginResult(OK(false));
+            return;
         }
         
         try {
@@ -1548,7 +1548,15 @@ public class WifiManagerPlugin extends CordovaPlugin {
         }
     }
 
+    /**
+     * Location permission needed for Wi-Fi scans depends on Android version:
+     * - Android 10+ (API 29+): require FINE location for Wi-Fi scan APIs in practice.
+     * - Android 9 and below: COARSE or FINE is enough.
+     */
     private boolean hasLocationPermission() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            return cordova.hasPermission(ACCESS_FINE_LOCATION);
+        }
         return cordova.hasPermission(ACCESS_COARSE_LOCATION) ||
                 cordova.hasPermission(ACCESS_FINE_LOCATION);
     }

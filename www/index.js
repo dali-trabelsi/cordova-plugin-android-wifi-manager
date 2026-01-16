@@ -1,6 +1,7 @@
 var METHODS = [
   'addNetwork',
   'checkPermissions',
+  'requestPermissions',
   'disableNetwork',
   'disconnect',
   'enableNetwork',
